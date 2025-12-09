@@ -1,0 +1,6 @@
+aiogram
+aiomysql
+python-dotenv
+apscheduler
+cryptography
+aiohttp
