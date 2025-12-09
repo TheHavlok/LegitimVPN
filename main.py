@@ -6,7 +6,7 @@ from config import BOT_TOKEN
 from database.db import init_db
 from handlers import user_handlers, admin_handlers, subscription_handlers
 from middlewares.auth_middleware import AuthMiddleware
-from utils.scheduler import start_scheduler
+#from utils.scheduler import start_scheduler
 
 # Настройка логирования
 logging.basicConfig(
@@ -44,7 +44,7 @@ async def main():
     logger.info("✅ Роутеры зарегистрированы")
     
     # Запуск планировщика задач
-    scheduler = await start_scheduler(bot)
+    #scheduler = await start_scheduler(bot)
     logger.info("✅ Планировщик задач запущен")
     
     try:
@@ -54,7 +54,7 @@ async def main():
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         await bot.session.close()
-        scheduler.shutdown()
+        #scheduler.shutdown()
         logger.info("⛔ Бот остановлен")
 
 if __name__ == '__main__':

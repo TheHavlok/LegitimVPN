@@ -4,12 +4,19 @@ from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from database.db import (
-    get_stats, get_all_users, search_users, ban_user, unban_user,
-    get_user, create_subscription, get_user_subscriptions,
-    get_revenue_by_period, deactivate_expired_subscriptions
+# handlers/admin_handlers.py — правильные импорты
+from database import (
+    get_user,
+    get_user_subscriptions,
+    get_all_users,
+    search_users,
+    ban_user,
+    unban_user,
+    get_stats,
+    get_revenue_by_period,
+    create_subscription,
 )
-from keyboards import (
+from keyboards.keyboard import (
     get_admin_menu, get_stats_keyboard, get_users_management_keyboard,
     get_user_actions_keyboard, get_give_subscription_keyboard,
     get_broadcast_confirm_keyboard, get_broadcast_type_keyboard,

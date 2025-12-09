@@ -7,7 +7,7 @@ from database.db import (
     get_user, create_user, get_active_subscription, 
     is_user_banned
 )
-from keyboards import (
+from keyboards.keyboard import (
     get_main_menu, get_subscription_plans_keyboard,
     get_subscription_info_keyboard, get_support_keyboard
 )
