@@ -2,10 +2,12 @@ import asyncio
 import logging
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
-from config import BOT_TOKEN
 from database.db import init_db
 from handlers import user_handlers, admin_handlers, subscription_handlers
 from middlewares.auth_middleware import AuthMiddleware
+from handlers.user_handlers import router as user_router
+from handlers.admin_handlers import router as admin_router
+from handlers.subscription_handlers import router as sub_router
 #from utils.scheduler import start_scheduler
 
 # Настройка логирования

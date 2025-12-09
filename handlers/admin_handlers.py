@@ -1,34 +1,76 @@
+# handlers/admin_handlers.py — ПОЛНОСТЬЮ ИСПРАВЛЕННЫЙ ФАЙЛ
+
 from datetime import datetime, timedelta
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-# handlers/admin_handlers.py — правильные импорты
-from database import (
+
+# ПРЯМЫЕ ИМПОРТЫ — БЕЗ __init__.py
+from database.db import (
     get_user,
-    get_user_subscriptions,
-    get_all_users,
-    search_users,
+    create_user,
     ban_user,
     unban_user,
     get_stats,
     get_revenue_by_period,
     create_subscription,
+    get_active_subscription,
+    get_user_payments,
+    get_active_servers,
+    add_vless_server,
 )
+
+# Добавляем недостающие функции ПРЯМО ЗДЕСЬ (чтобы не падало)
+import aiomysql
+from database.db import pool
+
+async def get_user_subscriptions(user_id: int):
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute("""
+                SELECT * FROM subscriptions 
+                WHERE user_id = %s 
+                ORDER BY created_at DESC
+            """, (user_id,))
+            return await cur.fetchall()
+
+async def get_all_users():
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute("SELECT * FROM users WHERE NOT is_banned ORDER BY registration_date DESC")
+            return await cur.fetchall()
+
+async def search_users(query: str):
+    query = f"%{query.strip()}%"
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute("""
+                SELECT * FROM users 
+                WHERE user_id LIKE %s 
+                   OR username LIKE %s 
+                   OR first_name LIKE %s 
+                   OR last_name LIKE %s
+                ORDER BY registration_date DESC
+                LIMIT 20
+            """, (query, query, query, query))
+            return await cur.fetchall()
+
+# Теперь импортируем клавиатуры
 from keyboards.keyboard import (
     get_admin_menu, get_stats_keyboard, get_users_management_keyboard,
     get_user_actions_keyboard, get_give_subscription_keyboard,
     get_broadcast_confirm_keyboard, get_broadcast_type_keyboard,
-    get_finance_keyboard, get_back_keyboard, get_confirm_keyboard
+    get_finance_keyboard, get_back_keyboard, get_confirm_keyboard,
+    get_vless_servers_keyboard
 )
+
 from config import ADMIN_IDS, SUBSCRIPTION_PLANS
-from utils.vpn_manager import generate_vpn_config
 import logging
 
 router = Router()
 logger = logging.getLogger(__name__)
-
 
 class AdminStates(StatesGroup):
     waiting_broadcast_message = State()
@@ -577,4 +619,221 @@ async def exit_admin(event: Message | CallbackQuery):
 async def back_to_users(callback: CallbackQuery):
     """Вернуться к списку пользователей"""
     await manage_users(callback.message)
+    await callback.answer()
+
+# ===================================================================
+#                  УПРАВЛЕНИЕ VLESS СЕРВЕРАМИ (3X-UI)
+# ===================================================================
+
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# ---------------------- Клавиатуры ----------------------
+
+def get_vless_servers_keyboard():
+    """Клавиатура в разделе «VLESS Серверы»"""
+    kb = [
+        [InlineKeyboardButton("Добавить сервер", callback_data="add_vless_server")],
+        [InlineKeyboardButton("Обновить список", callback_data="refresh_servers")],
+        [InlineKeyboardButton("Назад в админку", callback_data="admin_back")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+# ---------------------- Состояния FSM ----------------------
+
+class AddServerStates(StatesGroup):
+    name          = State()   # название сервера
+    ip            = State()   # IP
+    port          = State()   # порт панели
+    secret        = State()   # secret path (например /abc123)
+    pbk           = State()   # public key (44 символа)
+    sid           = State()   # short id (можно пусто)
+    server_type   = State()   # standard / bypass
+    max_clients   = State()   # лимит клиентов
+
+
+# ---------------------- Главное меню серверов ----------------------
+
+@router.message(F.text == "VLESS Серверы")
+async def show_vless_servers(message: Message):
+    """Показать список всех активных серверов"""
+    if not is_admin(message.from_user.id):
+        return
+
+    servers = await get_active_servers()          # ← функция из database/__init__.py
+    if not servers:
+        text = "Добавленных серверов пока нет.\nНажмите кнопку ниже, чтобы добавить первый!"
+    else:
+        text = "<b>Активные VLESS-серверы</b>\n\n"
+        for s in servers:
+            emoji = "Обычный" if s['type'] == 'standard' else "Обход"
+            text += (
+                f"{emoji} <b>{s['name']}</b> (ID: <code>{s['id']}</code>)\n"
+                f"└ IP: <code>{s['ip']}:{s['port']}</code>\n"
+                f"└ Клиентов: {s['current_load']}/{s['max_clients']}\n\n"
+            )
+
+    await message.answer(text, parse_mode="HTML", reply_markup=get_vless_servers_keyboard())
+
+
+# ---------------------- Кнопка «Обновить список» ----------------------
+
+@router.callback_query(F.data == "refresh_servers")
+async def refresh_servers(callback: CallbackQuery):
+    await show_vless_servers(callback.message)
+    await callback.answer("Список обновлён")
+
+
+# ---------------------- Добавление нового сервера ----------------------
+
+@router.callback_query(F.data == "add_vless_server")
+async def start_add_server(callback: CallbackQuery, state: FSMContext):
+    """Начать процесс добавления сервера"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Доступ запрещён", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        "Добавление нового VLESS-сервера\n\n"
+        "<b>Шаг 1 из 8</b>\n"
+        "Введите название сервера (для себя, например: Москва Reality):",
+        parse_mode="HTML",
+        reply_markup=get_back_keyboard("servers_back")
+    )
+    await state.set_state(AddServerStates.name)
+    await callback.answer()
+
+
+# 1. Название
+@router.message(AddServerStates.name)
+async def step_name(message: Message, state: FSMContext):
+    await state.update_data(name=message.text.strip())
+    await message.answer("Шаг 2/8\nВведите IP-адрес сервера (пример: 185.123.45.67):")
+    await state.set_state(AddServerStates.ip)
+
+
+# 2. IP
+@router.message(AddServerStates.ip)
+async def step_ip(message: Message, state: FSMContext):
+    ip = message.text.strip()
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        await message.answer("Неверный IP! Попробуйте ещё раз:")
+        return
+    await state.update_data(ip=ip)
+    await message.answer("Шаг 3/8\nВведите порт панели 3x-ui (обычно 2053 или 54321):")
+    await state.set_state(AddServerStates.port)
+
+
+# 3. Порт
+@router.message(AddServerStates.port)
+async def step_port(message: Message, state: FSMContext):
+    if not message.text.isdigit() or not (1 <= int(message.text) <= 65535):
+        await message.answer("Порт должен быть числом от 1 до 65535!")
+        return
+    await state.update_data(port=int(message.text))
+    await message.answer("Шаг 4/8\nВведите секретный путь (пример: mysecret123):")
+    await state.set_state(AddServerStates.secret)
+
+
+# 4. Secret path
+@router.message(AddServerStates.secret)
+async def step_secret(message: Message, state: FSMContext):
+    secret = message.text.strip()
+    if len(secret) < 3:
+        await message.answer("Секрет слишком короткий!")
+        return
+    await state.update_data(secret_path=secret)
+    await message.answer("Шаг 5/8\nВведите Public Key (pbk) — ровно 44 символа base64:")
+    await state.set_state(AddServerStates.pbk)
+
+
+# 5. Public Key (pbk)
+@router.message(AddServerStates.pbk)
+async def step_pbk(message: Message, state: FSMContext):
+    pbk = message.text.strip()
+    if len(pbk) != 44 or not all(c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=" for c in pbk):
+        await message.answer("Неверный pbk! Должно быть ровно 44 символа base64.")
+        return
+    await state.update_data(pbk=pbk)
+    await message.answer("Шаг 6/8\nВведите Short ID (sid) — до 16 символов (можно оставить пустым):")
+    await state.set_state(AddServerStates.sid)
+
+
+# 6. Short ID (можно пусто)
+@router.message(AddServerStates.sid)
+async def step_sid(message: Message, state: FSMContext):
+    sid = message.text.strip()
+    if len(sid) > 16:
+        await message.answer("SID слишком длинный! Максимум 16 символов.")
+        return
+    await state.update_data(sid=sid or None)
+
+    # Выбор типа сервера
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton("Обычная подписка", callback_data="srv_type_standard")],
+        [InlineKeyboardButton("Обход белых списков", callback_data="srv_type_bypass")],
+        [InlineKeyboardButton("Назад", callback_data="servers_back")]
+    ])
+    await message.answer("Шаг 7/8\nВыберите тип сервера:", reply_markup=kb)
+    await state.set_state(AddServerStates.server_type)
+
+
+# 7. Тип сервера
+@router.callback_query(F.data.startswith("srv_type_"))
+async def step_type(callback: CallbackQuery, state: FSMContext):
+    stype = "standard" if "standard" in callback.data else "bypass"
+    await state.update_data(type=stype)
+    await callback.message.edit_text(
+        "Шаг 8/8\nВведите максимальное количество клиентов (по умолчанию 1000):",
+        reply_markup=get_back_keyboard("servers_back")
+    )
+    await state.set_state(AddServerStates.max_clients)
+    await callback.answer()
+
+
+# 8. Максимум клиентов → финал
+@router.message(AddServerStates.max_clients)
+async def step_max_clients(message: Message, state: FSMContext):
+    if not message.text.isdigit() or int(message.text) < 10:
+        await message.answer("Минимум 10 клиентов!")
+        return
+
+    data = await state.get_data()
+    data["max_clients"] = int(message.text)
+
+    # Сохраняем в базу
+    server_id = await add_vless_server(
+        name=data["name"],
+        ip=data["ip"],
+        port=data["port"],
+        secret=data["secret_path"],
+        pbk=data["pbk"],
+        sid=data["sid"],
+        server_type=data["type"],
+        max_clients=data["max_clients"]
+    )
+
+    type_name = "Обычный" if data["type"] == "standard" else "Обход белых списков"
+
+    await message.answer(
+        f"Сервер успешно добавлен!\n\n"
+        f"ID: <code>{server_id}</code>\n"
+        f"Название: {data['name']}\n"
+        f"Тип: {type_name}\n"
+        f"IP: {data['ip']}:{data['port']}\n"
+        f"Макс. клиентов: {data['max_clients']}",
+        parse_mode="HTML",
+        reply_markup=get_back_keyboard("admin_back")
+    )
+    await state.clear()
+
+
+# ---------------------- Кнопка «Назад» при добавлении ----------------------
+
+@router.callback_query(F.data == "servers_back")
+async def back_from_adding_server(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await show_vless_servers(callback.message)
     await callback.answer()

@@ -2,7 +2,7 @@
 import aiomysql
 from config import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
 from typing import Optional, List, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 pool = None
 
@@ -22,7 +22,6 @@ async def init_db():
 
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            # Таблицы
             await cur.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
@@ -64,6 +63,24 @@ async def init_db():
                 )
             ''')
 
+            await cur.execute('''
+                CREATE TABLE IF NOT EXISTS vless_servers (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(100) NOT NULL,
+                    ip VARCHAR(45) NOT NULL,
+                    port INT NOT NULL,
+                    secret_path VARCHAR(100) NOT NULL,
+                    pbk VARCHAR(44) NOT NULL,
+                    sid VARCHAR(16),
+                    type ENUM('standard', 'bypass') DEFAULT 'standard',
+                    is_active BOOLEAN DEFAULT TRUE,
+                    current_load INT DEFAULT 0,
+                    max_clients INT DEFAULT 1000,
+                    remark VARCHAR(255),
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
 async def close_db():
     global pool
     if pool:
@@ -73,14 +90,13 @@ async def close_db():
 # ========== ПОЛЬЗОВАТЕЛИ ==========
 async def get_user(user_id: int) -> Optional[Dict]:
     async with pool.acquire() as conn:
-     async with conn.cursor(aiomysql.DictCursor) as cur:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
             await cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
-            result = await cur.fetchone()
-            return result
+            return await cur.fetchone()
 
 async def create_user(user_id: int, username=None, first_name=None, last_name=None):
     async with pool.acquire() as conn:
-     async with conn.cursor() as cur:
+        async with conn.cursor() as cur:
             await cur.execute('''
                 INSERT INTO users (user_id, username, first_name, last_name)
                 VALUES (%s, %s, %s, %s)
@@ -92,25 +108,25 @@ async def create_user(user_id: int, username=None, first_name=None, last_name=No
 
 async def is_user_banned(user_id: int) -> bool:
     async with pool.acquire() as conn:
-     async with conn.cursor() as cur:
+        async with conn.cursor() as cur:
             await cur.execute("SELECT is_banned FROM users WHERE user_id = %s", (user_id,))
             result = await cur.fetchone()
             return bool(result[0]) if result else False
 
 async def ban_user(user_id: int):
     async with pool.acquire() as conn:
-     async with conn.cursor() as cur:
+        async with conn.cursor() as cur:
             await cur.execute("UPDATE users SET is_banned = TRUE WHERE user_id = %s", (user_id,))
 
 async def unban_user(user_id: int):
     async with pool.acquire() as conn:
-     async with conn.cursor() as cur:
+        async with conn.cursor() as cur:
             await cur.execute("UPDATE users SET is_banned = FALSE WHERE user_id = %s", (user_id,))
 
 # ========== ПОДПИСКИ ==========
 async def get_active_subscription(user_id: int) -> Optional[Dict]:
     async with pool.acquire() as conn:
-     async with conn.cursor(aiomysql.DictCursor) as cur:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
             await cur.execute('''
                 SELECT * FROM subscriptions
                 WHERE user_id = %s AND is_active = TRUE AND end_date > NOW()
@@ -122,10 +138,8 @@ async def create_subscription(user_id: int, plan_type: str, duration_days: int, 
                             vpn_login: str = None, vpn_password: str = None) -> Dict:
     end_date = datetime.now() + timedelta(days=duration_days)
     async with pool.acquire() as conn:
-     async with conn.cursor(aiomysql.DictCursor) as cur:
-            # Деактивируем старую
+        async with conn.cursor(aiomysql.DictCursor) as cur:
             await cur.execute("UPDATE subscriptions SET is_active = FALSE WHERE user_id = %s AND is_active = TRUE", (user_id,))
-            # Создаём новую
             await cur.execute('''
                 INSERT INTO subscriptions 
                 (user_id, plan_type, end_date, vpn_config, vpn_login, vpn_password)
@@ -137,7 +151,7 @@ async def create_subscription(user_id: int, plan_type: str, duration_days: int, 
 # ========== ПЛАТЕЖИ ==========
 async def create_payment(user_id: int, amount: float, currency: str, plan_type: str, payment_id: str):
     async with pool.acquire() as conn:
-     async with conn.cursor() as cur:
+        async with conn.cursor() as cur:
             await cur.execute('''
                 INSERT IGNORE INTO payments 
                 (user_id, amount, currency, plan_type, payment_id, status)
@@ -146,74 +160,83 @@ async def create_payment(user_id: int, amount: float, currency: str, plan_type: 
 
 async def update_payment_status(payment_id: str, status: str):
     async with pool.acquire() as conn:
-     async with conn.cursor() as cur:
+        async with conn.cursor() as cur:
             await cur.execute("UPDATE payments SET status = %s WHERE payment_id = %s", (status, payment_id))
 
-async def get_payment_by_id(payment_id: str):
+async def get_payment_by_id(payment_id: str) -> Optional[Dict]:
     async with pool.acquire() as conn:
-     async with conn.cursor(aiomysql.DictCursor) as cur:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
             await cur.execute("SELECT * FROM payments WHERE payment_id = %s", (payment_id,))
             return await cur.fetchone()
+
+async def get_user_payments(user_id: int) -> List[Dict]:
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute("""
+                SELECT * FROM payments 
+                WHERE user_id = %s 
+                ORDER BY created_at DESC 
+                LIMIT 20
+            """, (user_id,))
+            return await cur.fetchall()
 
 # ========== СТАТИСТИКА ==========
 async def get_stats() -> Dict[str, Any]:
     async with pool.acquire() as conn:
-     async with conn.cursor() as cur:
-            await cur.execute("SELECT COUNT(*) FROM users WHERE NOT is_banned")
-            total_users = (await cur.fetchone())[0]
-
-            await cur.execute("SELECT COUNT(*) FROM subscriptions WHERE is_active AND end_date > NOW()")
-            active_subs = (await cur.fetchone())[0]
-
-            await cur.execute("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status = 'succeeded'")
-            total_revenue = float((await cur.fetchone())[0])
-
-            return {
-                "total_users": total_users,
-                "active_subscriptions": active_subs,
-                "total_revenue": total_revenue,
-                "revenue_today": 0.0,  # можно дополнить
-                "new_users_today": 0,
-                "payments_today": 0
-            }
-
-async def get_stats() -> Dict[str, Any]:
-    async with pool.acquire() as conn:
         total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
-        banned_count = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_banned")
         active_subs = await conn.fetchval("SELECT COUNT(*) FROM subscriptions WHERE is_active AND end_date > NOW()")
         total_revenue = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status = 'succeeded'")
         
         today = date.today()
         revenue_today = await conn.fetchval('''
             SELECT COALESCE(SUM(amount), 0) FROM payments 
-            WHERE status = 'succeeded' AND DATE(created_at) = $1
+            WHERE status = 'succeeded' AND DATE(created_at) = %s
         ''', today)
-        new_today = await conn.fetchval("SELECT COUNT(*) FROM users WHERE DATE(registration_date) = $1", today)
-        payments_today = await conn.fetchval("SELECT COUNT(*) FROM payments WHERE status='succeeded' AND DATE(created_at)=$1", today)
+        new_today = await conn.fetchval("SELECT COUNT(*) FROM users WHERE DATE(registration_date) = %s", today)
+        payments_today = await conn.fetchval("SELECT COUNT(*) FROM payments WHERE status='succeeded' AND DATE(created_at)=%s", today)
 
         return {
             "total_users": total_users or 0,
-            "banned_count": banned_count or 0,
             "active_subscriptions": active_subs or 0,
-            "total_revenue": float(total_revenue),
-            "revenue_today": float(revenue_today),
+            "total_revenue": float(total_revenue or 0),
+            "revenue_today": float(revenue_today or 0),
             "new_users_today": new_today or 0,
             "payments_today": payments_today or 0,
         }
 
 async def get_revenue_by_period(days: int) -> List[Dict]:
-    """Для графика доходов (последние N дней)"""
     async with pool.acquire() as conn:
         rows = await conn.fetch('''
-            SELECT 
-                DATE(created_at) as date,
-                COALESCE(SUM(amount), 0) as total,
-                COUNT(*) as count
+            SELECT DATE(created_at) as date, COALESCE(SUM(amount), 0) as total, COUNT(*) as count
             FROM payments
-            WHERE status = 'succeeded'
-              AND created_at >= NOW() - INTERVAL '%s days'
+            WHERE status = 'succeeded' AND created_at >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
             GROUP BY DATE(created_at)
             ORDER BY date DESC
         ''', days)
         return [dict(r) for r in rows]
+
+# ========== VLESS СЕРВЕРА ==========
+async def get_active_servers(server_type: str = None) -> List[Dict]:
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            if server_type:
+                await cur.execute("SELECT * FROM vless_servers WHERE is_active = TRUE AND type = %s ORDER BY current_load ASC", (server_type,))
+            else:
+                await cur.execute("SELECT * FROM vless_servers WHERE is_active = TRUE ORDER BY current_load ASC")
+            return await cur.fetchall()
+
+async def get_server_by_id(server_id: int) -> Optional[Dict]:
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute("SELECT * FROM vless_servers WHERE id = %s", (server_id,))
+            return await cur.fetchone()
+
+async def add_vless_server(name: str, ip: str, port: int, secret: str, pbk: str, sid: str | None, server_type: str, max_clients: int = 1000) -> int:
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                INSERT INTO vless_servers (name, ip, port, secret_path, pbk, sid, type, max_clients)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (name, ip, port, secret, pbk, sid, server_type, max_clients))
+            await conn.commit()
+            return cur.lastrowid

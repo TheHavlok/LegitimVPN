@@ -98,6 +98,7 @@ def get_admin_menu():
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [
+                [KeyboardButton(text="VLESS Серверы")],
                 KeyboardButton(text="📊 Статистика"),
                 KeyboardButton(text="👥 Пользователи")
             ],
@@ -267,4 +268,19 @@ def get_back_keyboard(callback_data: str = "admin_back"):
             [InlineKeyboardButton(text="🔙 Назад", callback_data=callback_data)]
         ]
     )
+    return keyboard
+
+# === Добавь это в конец файла keyboards/keyboard.py ===
+
+def get_vless_servers_keyboard():
+    """Клавиатура для раздела VLESS Серверы"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton("Добавить сервер", callback_data="add_vless_server"),
+        ],
+        [
+            InlineKeyboardButton("Обновить список", callback_data="refresh_servers"),
+            InlineKeyboardButton("Назад", callback_data="admin_back")
+        ]
+    ])
     return keyboard
