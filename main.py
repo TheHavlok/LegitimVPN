@@ -1,14 +1,16 @@
+# main.py — ИСПРАВЛЕННАЯ ВЕРСИЯ
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
-from database.db import init_db
-from handlers import user_handlers, admin_handlers, subscription_handlers
+
+# ИМПОРТЫ
+from config import BOT_TOKEN
+from database.db import init_db, close_db
 from middlewares.auth_middleware import AuthMiddleware
 from handlers.user_handlers import router as user_router
 from handlers.admin_handlers import router as admin_router
 from handlers.subscription_handlers import router as sub_router
-#from utils.scheduler import start_scheduler
 
 # Настройка логирования
 logging.basicConfig(
@@ -23,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 async def main():
     """Главная функция запуска бота"""
-    logger.info("🚀 Запуск VPN бота...")
+    logger.info("🚀 Запуск LegitimVPN бота...")
     
     # Инициализация бота и диспетчера
     bot = Bot(token=BOT_TOKEN)
@@ -39,24 +41,21 @@ async def main():
     dp.callback_query.middleware(AuthMiddleware())
     
     # Регистрация роутеров
-    dp.include_router(user_handlers.router)
-    dp.include_router(admin_handlers.router)
-    dp.include_router(subscription_handlers.router)
+    dp.include_router(user_router)
+    dp.include_router(admin_router)
+    dp.include_router(sub_router)
     
     logger.info("✅ Роутеры зарегистрированы")
-    
-    # Запуск планировщика задач
-    #scheduler = await start_scheduler(bot)
-    logger.info("✅ Планировщик задач запущен")
     
     try:
         # Удаление вебхука и запуск polling
         await bot.delete_webhook(drop_pending_updates=True)
-        logger.info("✅ Бот успешно запущен!")
+        logger.info("✅ LegitimVPN бот успешно запущен!")
+        logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         await bot.session.close()
-        #scheduler.shutdown()
+        await close_db()
         logger.info("⛔ Бот остановлен")
 
 if __name__ == '__main__':

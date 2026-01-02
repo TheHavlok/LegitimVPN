@@ -1,9 +1,11 @@
-# database/db.py
+# database/db.py — ИСПРАВЛЕННАЯ ВЕРСИЯ
 import aiomysql
 from config import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta, date
+import logging
 
+logger = logging.getLogger(__name__)
 pool = None
 
 async def init_db():
@@ -145,7 +147,7 @@ async def create_subscription(user_id: int, plan_type: str, duration_days: int, 
                 (user_id, plan_type, end_date, vpn_config, vpn_login, vpn_password)
                 VALUES (%s, %s, %s, %s, %s, %s)
             ''', (user_id, plan_type, end_date, vpn_config, vpn_login, vpn_password))
-            await cur.execute("SELECT * FROM subscriptions ORDER BY id DESC LIMIT 1")
+            await cur.execute("SELECT * FROM subscriptions WHERE user_id = %s ORDER BY id DESC LIMIT 1", (user_id,))
             return await cur.fetchone()
 
 # ========== ПЛАТЕЖИ ==========
@@ -180,40 +182,53 @@ async def get_user_payments(user_id: int) -> List[Dict]:
             """, (user_id,))
             return await cur.fetchall()
 
-# ========== СТАТИСТИКА ==========
+# ========== СТАТИСТИКА (ИСПРАВЛЕНО!) ==========
 async def get_stats() -> Dict[str, Any]:
     async with pool.acquire() as conn:
-        total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
-        active_subs = await conn.fetchval("SELECT COUNT(*) FROM subscriptions WHERE is_active AND end_date > NOW()")
-        total_revenue = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status = 'succeeded'")
-        
-        today = date.today()
-        revenue_today = await conn.fetchval('''
-            SELECT COALESCE(SUM(amount), 0) FROM payments 
-            WHERE status = 'succeeded' AND DATE(created_at) = %s
-        ''', today)
-        new_today = await conn.fetchval("SELECT COUNT(*) FROM users WHERE DATE(registration_date) = %s", today)
-        payments_today = await conn.fetchval("SELECT COUNT(*) FROM payments WHERE status='succeeded' AND DATE(created_at)=%s", today)
+        async with conn.cursor() as cur:
+            # Правильный способ получения значений
+            await cur.execute("SELECT COUNT(*) FROM users")
+            total_users = (await cur.fetchone())[0]
+            
+            await cur.execute("SELECT COUNT(*) FROM subscriptions WHERE is_active = TRUE AND end_date > NOW()")
+            active_subs = (await cur.fetchone())[0]
+            
+            await cur.execute("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status = 'succeeded'")
+            total_revenue = (await cur.fetchone())[0]
+            
+            today = date.today()
+            await cur.execute('''
+                SELECT COALESCE(SUM(amount), 0) FROM payments 
+                WHERE status = 'succeeded' AND DATE(created_at) = %s
+            ''', (today,))
+            revenue_today = (await cur.fetchone())[0]
+            
+            await cur.execute("SELECT COUNT(*) FROM users WHERE DATE(registration_date) = %s", (today,))
+            new_today = (await cur.fetchone())[0]
+            
+            await cur.execute("SELECT COUNT(*) FROM payments WHERE status='succeeded' AND DATE(created_at)=%s", (today,))
+            payments_today = (await cur.fetchone())[0]
 
-        return {
-            "total_users": total_users or 0,
-            "active_subscriptions": active_subs or 0,
-            "total_revenue": float(total_revenue or 0),
-            "revenue_today": float(revenue_today or 0),
-            "new_users_today": new_today or 0,
-            "payments_today": payments_today or 0,
-        }
+            return {
+                "total_users": total_users or 0,
+                "active_subscriptions": active_subs or 0,
+                "total_revenue": float(total_revenue or 0),
+                "revenue_today": float(revenue_today or 0),
+                "new_users_today": new_today or 0,
+                "payments_today": payments_today or 0,
+            }
 
 async def get_revenue_by_period(days: int) -> List[Dict]:
     async with pool.acquire() as conn:
-        rows = await conn.fetch('''
-            SELECT DATE(created_at) as date, COALESCE(SUM(amount), 0) as total, COUNT(*) as count
-            FROM payments
-            WHERE status = 'succeeded' AND created_at >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
-            GROUP BY DATE(created_at)
-            ORDER BY date DESC
-        ''', days)
-        return [dict(r) for r in rows]
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute('''
+                SELECT DATE(created_at) as date, COALESCE(SUM(amount), 0) as total, COUNT(*) as count
+                FROM payments
+                WHERE status = 'succeeded' AND created_at >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+                GROUP BY DATE(created_at)
+                ORDER BY date DESC
+            ''', (days,))
+            return await cur.fetchall()
 
 # ========== VLESS СЕРВЕРА ==========
 async def get_active_servers(server_type: str = None) -> List[Dict]:
@@ -238,5 +253,36 @@ async def add_vless_server(name: str, ip: str, port: int, secret: str, pbk: str,
                 INSERT INTO vless_servers (name, ip, port, secret_path, pbk, sid, type, max_clients)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """, (name, ip, port, secret, pbk, sid, server_type, max_clients))
-            await conn.commit()
             return cur.lastrowid
+
+# ========== ДОПОЛНИТЕЛЬНЫЕ ФУНКЦИИ ==========
+async def get_user_subscriptions(user_id: int):
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute("""
+                SELECT * FROM subscriptions 
+                WHERE user_id = %s 
+                ORDER BY created_at DESC
+            """, (user_id,))
+            return await cur.fetchall()
+
+async def get_all_users():
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute("SELECT * FROM users WHERE NOT is_banned ORDER BY registration_date DESC")
+            return await cur.fetchall()
+
+async def search_users(query: str):
+    query = f"%{query.strip()}%"
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute("""
+                SELECT * FROM users 
+                WHERE CAST(user_id AS CHAR) LIKE %s 
+                   OR username LIKE %s 
+                   OR first_name LIKE %s 
+                   OR last_name LIKE %s
+                ORDER BY registration_date DESC
+                LIMIT 20
+            """, (query, query, query, query))
+            return await cur.fetchall()
